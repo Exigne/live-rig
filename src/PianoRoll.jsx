@@ -17,9 +17,9 @@ for (let oct = 5; oct >= 1; oct--) {
   }
 }
 
-export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpdate, onClose }) {
-  const gridRef = null;
-
+// Added onPlayNote to the props!
+export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpdate, onClose, onPlayNote }) {
+  
   const toggle = (si, note, oct) => {
     const cur = seqData[si];
     if (cur?.note === note && cur?.oct === oct) onUpdate(si, null);
@@ -91,25 +91,30 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
         {/* ── Piano keys + Grid ── */}
         <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', display: 'flex' }}>
 
-          {/* Piano keyboard */}
+          {/* Piano keyboard (Left Side) */}
           <div style={{
             width: KEY_W, flexShrink: 0,
             borderRight: '2px solid #e0ddd8',
             background: '#fafafa',
           }}>
             {ROLL_NOTES.map(({ note, oct, isBlack }) => (
-              <div key={`k-${note}${oct}`} style={{
-                height: CELL_H, display: 'flex', alignItems: 'center',
-                paddingLeft: isBlack ? 6 : 10,
-                background: isBlack ? '#2a2828' : '#fff',
-                borderBottom: `1px solid ${note === 'C' ? '#c0bdb8' : isBlack ? '#222' : '#ece9e4'}`,
-                fontSize: 8, letterSpacing: 0.5,
-                color: isBlack ? '#888'
-                  : note === 'C' ? trackDef.col
-                  : '#bbb',
-                fontWeight: note === 'C' ? 700 : 400,
-                boxSizing: 'border-box',
-                borderLeft: isBlack ? '3px solid #111' : `3px solid ${note === 'C' ? trackDef.col + '80' : '#e0ddd8'}`,
+              <div 
+                key={`k-${note}${oct}`} 
+                // Added onClick handler to play the note!
+                onClick={() => onPlayNote && onPlayNote(note, oct)}
+                style={{
+                  height: CELL_H, display: 'flex', alignItems: 'center',
+                  paddingLeft: isBlack ? 6 : 10,
+                  background: isBlack ? '#2a2828' : '#fff',
+                  borderBottom: `1px solid ${note === 'C' ? '#c0bdb8' : isBlack ? '#222' : '#ece9e4'}`,
+                  fontSize: 8, letterSpacing: 0.5,
+                  color: isBlack ? '#888'
+                    : note === 'C' ? trackDef.col
+                    : '#bbb',
+                  fontWeight: note === 'C' ? 700 : 400,
+                  boxSizing: 'border-box',
+                  borderLeft: isBlack ? '3px solid #111' : `3px solid ${note === 'C' ? trackDef.col + '80' : '#e0ddd8'}`,
+                  cursor: onPlayNote ? 'pointer' : 'default', // Make it look clickable
               }}>
                 {!isBlack && (note === 'C' || note === 'E' || note === 'G' || note === 'A')
                   ? `${note}${oct}` : ''}
@@ -117,7 +122,7 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
             ))}
           </div>
 
-          {/* Grid columns */}
+          {/* Grid columns (Right Side) */}
           <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
             {Array(16).fill(0).map((_,si) => (
               <div key={si} style={{
