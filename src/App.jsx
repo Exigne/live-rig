@@ -3,10 +3,10 @@
  * Light theme · Rack UI · Piano Roll · Song Save/Load · Neon Auth · Cloudinary
  *
  * Place in src/App.jsx alongside:
- *   src/PianoRoll.jsx   — piano roll modal
- *   src/AudioEngine.js  — Web Audio engine
- *   src/api.js          — Neon + Cloudinary API helpers
- *   netlify/functions/  — serverless backend
+ * src/PianoRoll.jsx   — piano roll modal
+ * src/AudioEngine.js  — Web Audio engine
+ * src/api.js          — Neon + Cloudinary API helpers
+ * netlify/functions/  — serverless backend
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -278,12 +278,12 @@ export default function App() {
   const [pianoRoll, setPianoRoll] = useState(null); // { trackId, highlightStep }
 
   // Songs
-  const [songs,       setSongs]      = useState([]);
-  const [showSongs,   setShowSongs]  = useState(false);
-  const [songName,    setSongName]   = useState('New Song');
-  const [activeSong,  setActiveSong] = useState(null);
+  const [songs,        setSongs]       = useState([]);
+  const [showSongs,    setShowSongs]   = useState(false);
+  const [songName,     setSongName]    = useState('New Song');
+  const [activeSong,   setActiveSong]  = useState(null);
   const [songLoading, setSongLoading]= useState(false);
-  const [songMsg,     setSongMsg]    = useState('');
+  const [songMsg,      setSongMsg]     = useState('');
 
   // ── Scheduler refs ──────────────────────────────────────────────────────────
   const schedRef  = useRef(null);
@@ -925,6 +925,22 @@ export default function App() {
           highlightStep={pianoRoll.highlightStep}
           onUpdate={pianoRollUpdate}
           onClose={() => setPianoRoll(null)}
+          onPlayNote={(note, oct) => {
+            ea(); // Ensure audio context is awake
+            if (pianoRoll.trackId === 'synth') {
+              engine.playSynth({ 
+                freq: noteFreq(note, oct), 
+                wave: sWave, 
+                atk: sAtk / 1000, 
+                rel: sRel / 1000, 
+                filter: sFlt 
+              });
+            } else if (pianoRoll.trackId === 'rr') {
+              engine.playRR(noteFreq(note, oct), engine.ctx.currentTime, 0.5, {
+                mr: rrMR, mi: rrMI, det: rrDet, flt: rrFlt, atk: rrAtk, rel: rrRel
+              });
+            }
+          }}
         />
       )}
 
