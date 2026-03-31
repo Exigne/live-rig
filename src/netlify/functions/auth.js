@@ -3,15 +3,11 @@
  *
  * Handles:  POST { action: 'login'|'register'|'verify', username, password }
  * Returns:  { token, userId } on success
- *
- * Env vars needed (set in Netlify dashboard → Site Settings → Environment Variables):
- *   DATABASE_URL   — Neon connection string  (postgresql://user:pass@host/dbname?sslmode=require)
- *   JWT_SECRET     — any long random string  (e.g. openssl rand -base64 48)
  */
 
-const { neon }    = require('@neondatabase/serverless');
-const bcrypt      = require('bcryptjs');
-const jwt         = require('jsonwebtoken');
+import { neon } from '@neondatabase/serverless';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 const HEADERS = {
   'Access-Control-Allow-Origin':  '*',
@@ -19,15 +15,26 @@ const HEADERS = {
   'Content-Type': 'application/json',
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
+  // Handle CORS preflight requests
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: HEADERS, body: '' };
-  if (event.httpMethod !== 'POST')   return { statusCode: 405, headers: HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
+  
+  // Only allow POST requests
+  if (event.httpMethod !== 'POST') return { statusCode: 405, headers: HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
+
+  // Safety check: Make sure environment variables are loaded
+  if (!process.env.DATABASE_URL || !process.env.JWT_SECRET) {
+    return err(500, 'Server configuration error: Missing environment variables');
+  }
 
   const sql = neon(process.env.DATABASE_URL);
 
   let body;
-  try { body = JSON.parse(event.body); }
-  catch { return err(400, 'Invalid JSON'); }
+  try { 
+    body = JSON.parse(event.body); 
+  } catch { 
+    return err(400, 'Invalid JSON'); 
+  }
 
   const { action, username, password } = body;
 
@@ -49,9 +56,11 @@ exports.handler = async (event) => {
   if (action === 'login') {
     const rows = await sql`SELECT id, username, password_hash FROM users WHERE username = ${uname}`;
     if (!rows.length) return err(401, 'Username not found');
+    
     const user = rows[0];
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return err(401, 'Incorrect password');
+    
     const token = signToken(user.id, user.username);
     return ok({ token, userId: user.id, username: user.username });
   }
@@ -59,16 +68,21 @@ exports.handler = async (event) => {
   // ── REGISTER ─────────────────────────────────────────────────────────────────
   if (action === 'register') {
     if (password.length < 6) return err(400, 'Password must be at least 6 characters');
+    
     const existing = await sql`SELECT id FROM users WHERE username = ${uname}`;
     if (existing.length) return err(409, 'Username already taken');
+    
     const hash = await bcrypt.hash(password, 12);
     const [user] = await sql`INSERT INTO users (username, password_hash) VALUES (${uname}, ${hash}) RETURNING id, username`;
+    
     const token = signToken(user.id, user.username);
     return ok({ token, userId: user.id, username: user.username });
   }
 
   return err(400, 'Unknown action');
 };
+
+// ── HELPER FUNCTIONS ─────────────────────────────────────────────────────────
 
 function signToken(userId, username) {
   return jwt.sign({ userId, username }, process.env.JWT_SECRET, { expiresIn: '30d' });
