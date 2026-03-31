@@ -3,17 +3,10 @@
  *
  * POST { data: base64string, filename: string, mimeType: string }
  * Returns { url, public_id }
- *
- * Env vars (Netlify dashboard):
- *   CLOUDINARY_CLOUD_NAME
- *   CLOUDINARY_API_KEY
- *   CLOUDINARY_API_SECRET
- *   DATABASE_URL
- *   JWT_SECRET
  */
 
-const cloudinary = require('cloudinary').v2;
-const jwt        = require('jsonwebtoken');
+import { v2 as cloudinary } from 'cloudinary';
+import jwt from 'jsonwebtoken';
 
 const HEADERS = {
   'Access-Control-Allow-Origin':  '*',
@@ -21,16 +14,21 @@ const HEADERS = {
   'Content-Type': 'application/json',
 };
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure:     true,
-});
-
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: HEADERS, body: '' };
   if (event.httpMethod !== 'POST')    return err(405, 'Method not allowed');
+
+  // Safety check: Make sure environment variables are loaded
+  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+    return err(500, 'Server configuration error: Missing Cloudinary variables');
+  }
+
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key:    process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure:     true,
+  });
 
   // Auth
   const tok = (event.headers['authorization'] || '').replace('Bearer ', '');
