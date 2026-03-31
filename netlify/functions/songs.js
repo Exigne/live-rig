@@ -1,20 +1,17 @@
 /**
  * netlify/functions/songs.js
  *
- * GET                         → list user's songs
- * POST  { name, state }       → create song
- * PUT   { id, name, state }   → update song
- * DELETE ?id=<id>             → delete song
+ * GET                           → list user's songs
+ * GET  ?id=<id>                 → load full song state
+ * POST  { name, state }         → create song
+ * PUT   { id, name, state }     → update song
+ * DELETE ?id=<id>               → delete song
  *
  * All routes require:  Authorization: Bearer <jwt>
- *
- * Env vars:
- *   DATABASE_URL
- *   JWT_SECRET
  */
 
-const { neon } = require('@neondatabase/serverless');
-const jwt      = require('jsonwebtoken');
+import { neon } from '@neondatabase/serverless';
+import jwt from 'jsonwebtoken';
 
 const HEADERS = {
   'Access-Control-Allow-Origin':  '*',
@@ -22,8 +19,13 @@ const HEADERS = {
   'Content-Type': 'application/json',
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: HEADERS, body: '' };
+
+  // Safety check: Make sure environment variables are loaded
+  if (!process.env.DATABASE_URL || !process.env.JWT_SECRET) {
+    return err(500, 'Server configuration error: Missing environment variables');
+  }
 
   // Auth
   const tok = (event.headers['authorization'] || '').replace('Bearer ', '');
@@ -36,6 +38,15 @@ exports.handler = async (event) => {
   }
 
   const sql = neon(process.env.DATABASE_URL);
+
+  // ── GET with id — load full song state ─────────────────────────────────────
+  // (Must happen before the general GET)
+  if (event.httpMethod === 'GET' && event.queryStringParameters?.id) {
+    const id = event.queryStringParameters.id;
+    const rows = await sql`SELECT id, name, state, created_at, updated_at FROM songs WHERE id = ${id} AND user_id = ${userId}`;
+    if (!rows.length) return err(404, 'Song not found');
+    return ok({ song: rows[0] });
+  }
 
   // ── GET — list songs ────────────────────────────────────────────────────────
   if (event.httpMethod === 'GET') {
@@ -51,7 +62,9 @@ exports.handler = async (event) => {
   }
 
   let body = {};
-  try { body = JSON.parse(event.body || '{}'); } catch {}
+  if (event.body) {
+    try { body = JSON.parse(event.body); } catch {}
+  }
 
   // ── POST — create song ──────────────────────────────────────────────────────
   if (event.httpMethod === 'POST') {
@@ -84,15 +97,6 @@ exports.handler = async (event) => {
       RETURNING id, name, created_at, updated_at
     `;
     return ok({ song });
-  }
-
-  // ── GET with id — load full song state ─────────────────────────────────────
-  // (This is a separate endpoint usage pattern — GET /songs?id=X)
-  if (event.httpMethod === 'GET' && event.queryStringParameters?.id) {
-    const id = event.queryStringParameters.id;
-    const rows = await sql`SELECT id, name, state, created_at, updated_at FROM songs WHERE id = ${id} AND user_id = ${userId}`;
-    if (!rows.length) return err(404, 'Song not found');
-    return ok({ song: rows[0] });
   }
 
   // ── DELETE — delete song ────────────────────────────────────────────────────
