@@ -1,9 +1,11 @@
 /**
  * PianoRoll.jsx
  * Pops up when a user clicks a step in a pitched sequencer track.
- * Shows a full 16-step × 5-octave grid with piano keyboard on the left.
+ * Shows a dynamic grid based on seqLen and stepsPerBeat.
  * Click a cell to set that step's note; click an active cell to clear it.
  */
+
+import { useRef } from "react";
 
 const NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const CELL_H = 15;
@@ -17,9 +19,17 @@ for (let oct = 5; oct >= 1; oct--) {
   }
 }
 
-// Added onPlayNote to the props!
-export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpdate, onClose, onPlayNote }) {
+export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, seqLen = 16, stepsPerBeat = 4, onUpdate, onClose, onPlayNote }) {
   
+  // Refs for scroll synchronization
+  const headerRef = useRef(null);
+  const keysRef   = useRef(null);
+
+  const handleGridScroll = (e) => {
+    if (headerRef.current) headerRef.current.scrollLeft = e.target.scrollLeft;
+    if (keysRef.current)   keysRef.current.scrollTop    = e.target.scrollTop;
+  };
+
   const toggle = (si, note, oct) => {
     const cur = seqData[si];
     if (cur?.note === note && cur?.oct === oct) onUpdate(si, null);
@@ -68,39 +78,41 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
           borderBottom: '2px solid #e8e6e2', background: '#f8f7f4',
         }}>
           <div style={{ width: KEY_W, flexShrink: 0, borderRight: '2px solid #e0ddd8' }} />
-          <div style={{ flex: 1, display: 'flex', height: 28 }}>
-            {Array(16).fill(0).map((_,si) => (
+          
+          {/* Scroll hidden, controlled by the grid below */}
+          <div ref={headerRef} style={{ flex: 1, display: 'flex', height: 28, overflow: 'hidden' }}>
+            {Array(seqLen).fill(0).map((_,si) => (
               <div key={si} style={{
-                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 9, fontWeight: si % 4 === 0 ? 700 : 400,
-                color: si % 4 === 0 ? '#333' : '#bbb',
+                flex: 1, minWidth: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 9, fontWeight: si % stepsPerBeat === 0 ? 700 : 400,
+                color: si % stepsPerBeat === 0 ? '#333' : '#bbb',
                 background: si === highlightStep
                   ? trackDef.col + '28'
                   : si === currentStep
                     ? '#fffbe6'
-                    : si % 8 < 4 ? '#fff' : '#f8f7f4',
-                borderRight: `1px solid ${si % 4 === 3 ? '#d0cdc8' : '#ece9e4'}`,
+                    : Math.floor(si / stepsPerBeat) % 2 === 0 ? '#fff' : '#f8f7f4', // Dynamic shading by beat!
+                borderRight: `1px solid ${si % stepsPerBeat === stepsPerBeat - 1 ? '#d0cdc8' : '#ece9e4'}`,
                 letterSpacing: 1,
               }}>
-                {si % 4 === 0 ? `${si / 4 + 1}` : si + 1}
+                {si % stepsPerBeat === 0 ? `${Math.floor(si / stepsPerBeat) + 1}` : si + 1}
               </div>
             ))}
           </div>
         </div>
 
         {/* ── Piano keys + Grid ── */}
-        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', display: 'flex' }}>
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
 
-          {/* Piano keyboard (Left Side) */}
-          <div style={{
+          {/* Piano keyboard (Left Side - Static X, syncs Y) */}
+          <div ref={keysRef} style={{
             width: KEY_W, flexShrink: 0,
             borderRight: '2px solid #e0ddd8',
             background: '#fafafa',
+            overflow: 'hidden', // Y-scroll is synchronized via handleGridScroll
           }}>
             {ROLL_NOTES.map(({ note, oct, isBlack }) => (
               <div 
                 key={`k-${note}${oct}`} 
-                // Added onClick handler to play the note!
                 onClick={() => onPlayNote && onPlayNote(note, oct)}
                 style={{
                   height: CELL_H, display: 'flex', alignItems: 'center',
@@ -114,7 +126,7 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
                   fontWeight: note === 'C' ? 700 : 400,
                   boxSizing: 'border-box',
                   borderLeft: isBlack ? '3px solid #111' : `3px solid ${note === 'C' ? trackDef.col + '80' : '#e0ddd8'}`,
-                  cursor: onPlayNote ? 'pointer' : 'default', // Make it look clickable
+                  cursor: onPlayNote ? 'pointer' : 'default',
               }}>
                 {!isBlack && (note === 'C' || note === 'E' || note === 'G' || note === 'A')
                   ? `${note}${oct}` : ''}
@@ -122,17 +134,17 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
             ))}
           </div>
 
-          {/* Grid columns (Right Side) */}
-          <div style={{ flex: 1, display: 'flex', minWidth: 0 }}>
-            {Array(16).fill(0).map((_,si) => (
+          {/* Grid columns (Right Side - Scrolls X and Y) */}
+          <div onScroll={handleGridScroll} style={{ flex: 1, display: 'flex', overflow: 'auto' }}>
+            {Array(seqLen).fill(0).map((_,si) => (
               <div key={si} style={{
-                flex: 1, minWidth: 0,
+                flex: 1, minWidth: 28,
                 background: si === highlightStep
                   ? trackDef.col + '14'
                   : si === currentStep
                     ? '#fffbe6'
-                    : si % 8 < 4 ? '#fff' : '#faf9f6',
-                borderRight: `1px solid ${si % 4 === 3 ? '#d0cdc8' : '#ece9e4'}`,
+                    : Math.floor(si / stepsPerBeat) % 2 === 0 ? '#fff' : '#faf9f6',
+                borderRight: `1px solid ${si % stepsPerBeat === stepsPerBeat - 1 ? '#d0cdc8' : '#ece9e4'}`,
               }}>
                 {ROLL_NOTES.map(({ note, oct, isBlack }) => {
                   const active = seqData[si]?.note === note && seqData[si]?.oct === oct;
@@ -176,7 +188,7 @@ export function PianoRoll({ trackDef, seqData, currentStep, highlightStep, onUpd
           display: 'flex', alignItems: 'center', padding: '0 18px', gap: 12,
         }}>
           <span style={{ fontSize: 10, color: '#9a9590' }}>
-            {seqData.filter(Boolean).length} / 16 steps programmed
+            {seqData.filter(Boolean).length} / {seqLen} steps programmed
           </span>
           <button
             onClick={() => onUpdate('clear')}
