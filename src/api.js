@@ -31,11 +31,24 @@ export const songs = {
   list: (token) =>
     req('/songs', {}, token),
 
+  // Fetches a single full song (useful if the 'list' endpoint drops the heavy 'state' column)
+  get: (token, id) =>
+    req(`/songs?id=${id}`, {}, token),
+
   save: (token, name, state) =>
-    req('/songs', { method: 'POST', body: JSON.stringify({ name, state }) }, token),
+    req('/songs', { 
+      method: 'POST', 
+      // PROTECT THE DATA: We stringify the state object directly before sending it 
+      // so it safely passes through the network and backend parsers into Neon's JSONB column
+      body: JSON.stringify({ name, state: JSON.stringify(state) }) 
+    }, token),
 
   update: (token, id, name, state) =>
-    req('/songs', { method: 'PUT', body: JSON.stringify({ id, name, state }) }, token),
+    req('/songs', { 
+      method: 'PUT', 
+      // PROTECT THE DATA: Stringify the state
+      body: JSON.stringify({ id, name, state: JSON.stringify(state) }) 
+    }, token),
 
   delete: (token, id) =>
     req(`/songs?id=${id}`, { method: 'DELETE' }, token),
@@ -69,9 +82,9 @@ export const cloudinary = {
 
 // ── WAV encoder (PCM 16-bit stereo) ──────────────────────────────────────────
 function encodeWAV(audioBuffer) {
-  const numCh     = audioBuffer.numberOfChannels;
+  const numCh      = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-  const samples   = audioBuffer.length;
+  const samples    = audioBuffer.length;
   const bitsPerSample = 16;
   const bytesPerSample = bitsPerSample / 8;
   const blockAlign = numCh * bytesPerSample;
