@@ -1,6 +1,6 @@
 /**
  * App.jsx — Live Rig Performance Suite
- * Dynamic Rack · Acid Bass · Horizontal Scrolling Sequencer · JSON State
+ * Dynamic Rack · Acid Bass · Note Length Stretching · Bulletproof Saves
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -283,8 +283,38 @@ export default function App() {
     } 
   };
 
-  // ── NEW ACID BASS SYNTH ENGINE (Inline) ──
-  const playAcid = useCallback((t, freq, d) => {
+  // ── CUSTOM SYNTH ENGINES (WITH LENGTH CONTROL) ──
+  const playPoly = useCallback((t, freq, d, dur) => {
+    const osc = engine.ctx.createOscillator();
+    osc.type = d.wave;
+    osc.frequency.setValueAtTime(freq, t);
+    
+    const flt = engine.ctx.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.frequency.setValueAtTime(d.flt, t);
+    
+    const vca = engine.ctx.createGain();
+    vca.gain.setValueAtTime(0, t);
+    
+    const atkTime = d.atk / 1000;
+    const relTime = d.rel / 1000;
+    
+    // Ramp up
+    vca.gain.linearRampToValueAtTime(0.5, t + atkTime);
+    // Hold for duration
+    vca.gain.setValueAtTime(0.5, Math.max(t + atkTime, t + dur));
+    // Release
+    vca.gain.exponentialRampToValueAtTime(0.001, Math.max(t + atkTime, t + dur) + relTime);
+    
+    osc.connect(flt);
+    flt.connect(vca);
+    vca.connect(engine.ctx.destination);
+    
+    osc.start(t);
+    osc.stop(Math.max(t + atkTime, t + dur) + relTime + 0.1);
+  }, []);
+
+  const playAcid = useCallback((t, freq, d, dur) => {
     const osc = engine.ctx.createOscillator(); 
     osc.type = d.wave; 
     osc.frequency.setValueAtTime(freq, t);
@@ -293,7 +323,7 @@ export default function App() {
     flt.type = 'lowpass'; 
     flt.Q.value = (d.res / 100) * 25; 
     flt.frequency.setValueAtTime(d.cut + d.env, t); 
-    flt.frequency.exponentialRampToValueAtTime(Math.max(40, d.cut), t + (d.dec/1000));
+    flt.frequency.exponentialRampToValueAtTime(Math.max(40, d.cut), t + dur); // Decay sweep across duration
     
     // Internal Distortion curve
     const shaper = engine.ctx.createWaveShaper(); 
@@ -309,7 +339,8 @@ export default function App() {
     const vca = engine.ctx.createGain(); 
     vca.gain.setValueAtTime(0, t); 
     vca.gain.linearRampToValueAtTime(0.6, t + 0.01); 
-    vca.gain.exponentialRampToValueAtTime(0.001, t + (d.dec/1000));
+    vca.gain.setValueAtTime(0.6, t + dur); // Hold VCA
+    vca.gain.exponentialRampToValueAtTime(0.001, t + dur + (d.dec/1000)); // Release VCA
     
     osc.connect(flt); 
     flt.connect(shaper); 
@@ -317,7 +348,7 @@ export default function App() {
     vca.connect(engine.ctx.destination);
     
     osc.start(t); 
-    osc.stop(t + (d.dec/1000) + 0.1);
+    osc.stop(t + dur + (d.dec/1000) + 0.1);
   }, []);
 
   // ── Scheduler ──
@@ -336,18 +367,20 @@ export default function App() {
       const noteObj = q[d.id]?.[s];
       if (!noteObj && d.type !== 'samp') return;
       
+      const dur = spb * (noteObj?.len || 1); // Pass the stretched note length to engine
+
       if (d.type === 'poly') {
-        engine.playSynth({ freq:noteFreq(noteObj.note, noteObj.oct), wave:d.wave, atk:d.atk/1000, rel:d.rel/1000, filter:d.flt });
+        playPoly(t, noteFreq(noteObj.note, noteObj.oct), d, dur);
       } else if (d.type === 'rr' && d.arp) {
-        engine.playRR(noteFreq(noteObj.note, noteObj.oct), t, spb * 0.85, d);
+        engine.playRR(noteFreq(noteObj.note, noteObj.oct), t, dur, d);
       } else if (d.type === 'acid') {
-        playAcid(t, noteFreq(noteObj.note, noteObj.oct), d);
+        playAcid(t, noteFreq(noteObj.note, noteObj.oct), d, dur);
       } else if (d.type === 'samp' && noteObj != null) {
         const pad = d.pads[noteObj]; 
         if (pad?.buf) engine.playPad(pad.buf, pad.vol, pad.pitch);
       }
     });
-  }, [playAcid]);
+  }, [playAcid, playPoly]);
 
   const startSeq = useCallback(() => {
     ea(); 
@@ -375,7 +408,7 @@ export default function App() {
     return () => clearTimeout(schedRef.current); 
   }, [playing, startSeq]);
 
-  // Keyboard Sampler (binds to first sampler found)
+  // Keyboard Sampler
   useEffect(() => {
     const onKey = e => {
       if (e.target.tagName === 'INPUT') return;
@@ -409,9 +442,7 @@ export default function App() {
   const removeDevice = (id) => {
     setDevices(prev => prev.filter(d => d.id !== id));
     setSeq(prev => { 
-      const n = {...prev}; 
-      delete n[id]; 
-      return n; 
+      const n = {...prev}; delete n[id]; return n; 
     });
   };
 
@@ -469,7 +500,7 @@ export default function App() {
     }));
   };
 
-  // ── Saving & Loading ──
+  // ── Bulletproof Saving & Loading ──
   const captureState = () => ({
     bpm, seqLen, stepsPerBeat, seq, mx, 
     fx: { dist:fxDist, dlyT:fxDlyT, dlyFb:fxDlyFb, dlyW:fxDlyW, rvW:fxRvW },
@@ -479,53 +510,53 @@ export default function App() {
     })
   });
 
-  const applyState = async (s) => {
-    setBpmS(s.bpm); 
-    setSeqLen(s.seqLen || 16); 
-    setStepsPerBeat(s.stepsPerBeat || 4);
-    setMx(s.mx); 
-    setFxDist(s.fx.dist); 
-    setFxDlyT(s.fx.dlyT); 
-    setFxDlyFb(s.fx.dlyFb); 
-    setFxDlyW(s.fx.dlyW); 
-    setFxRvW(s.fx.rvW);
-    ea();
-    
-    // Handle Legacy Saves seamlessly
-    let loadedDevices = s.devices;
-    if (!loadedDevices) {
-      loadedDevices = [
-        { id: 'poly-1', type: 'poly', note: 'A', oct: 4, wave: s.synth.wave, atk: s.synth.atk, rel: s.synth.rel, flt: s.synth.flt },
-        { id: 'rr-1',   type: 'rr',   ...s.rr },
-        { id: 'samp-1', type: 'samp', pads: s.pads }
-      ];
-      s.seq = { kick: s.seq.kick, snare: s.seq.snare, hh: s.seq.hh, bass: s.seq.bass, 'poly-1': s.seq.synth, 'rr-1': s.seq.rr, 'samp-1': s.seq.samp };
+  const applyState = async (rawState) => {
+    if (!rawState) throw new Error("Song data is empty. Please refresh the page and try again.");
+    let s = rawState;
+    if (typeof s === 'string') {
+      try { s = JSON.parse(s); } catch (e) { throw new Error("Failed to parse song data."); }
     }
 
-    // Fetch Audio Buffers for all samplers
+    setBpmS(s.bpm || 120); setSeqLen(s.seqLen || 16); setStepsPerBeat(s.stepsPerBeat || 4);
+    if (s.mx) setMx(s.mx); 
+    if (s.fx) {
+      setFxDist(s.fx.dist || 0); setFxDlyT(s.fx.dlyT || 30); setFxDlyFb(s.fx.dlyFb || 25); 
+      setFxDlyW(s.fx.dlyW || 0); setFxRvW(s.fx.rvW || 0);
+    }
+    ea();
+    
+    let loadedDevices = s.devices;
+    let loadedSeq = s.seq || {};
+    
+    if (!loadedDevices) {
+      loadedDevices = [
+        { id: 'poly-1', type: 'poly', note: 'A', oct: 4, wave: s.synth?.wave || 'sawtooth', atk: s.synth?.atk || 20, rel: s.synth?.rel || 600, flt: s.synth?.flt || 2000 },
+        { id: 'rr-1',   type: 'rr',   ...(s.rr || DEVICE_TYPES.rr.def) },
+        { id: 'samp-1', type: 'samp', pads: s.pads || DEVICE_TYPES.samp.def.pads }
+      ];
+      loadedSeq = { 
+        kick: loadedSeq.kick || [], snare: loadedSeq.snare || [], hh: loadedSeq.hh || [], bass: loadedSeq.bass || [], 
+        'poly-1': loadedSeq.synth || [], 'rr-1': loadedSeq.rr || [], 'samp-1': loadedSeq.samp || [] 
+      };
+    }
+
     const hydratedDevices = await Promise.all(loadedDevices.map(async (d) => {
       if (d.type !== 'samp') return d;
-      const newPads = await Promise.all(d.pads.map(async (p) => {
+      const newPads = await Promise.all((d.pads || []).map(async (p) => {
         if (!p.cloudUrl) return { ...p, buf: null };
-        try { 
-          const buf = await cloudinary.fetchPad(engine.ctx, p.cloudUrl); 
-          return { ...p, buf }; 
-        } catch { 
-          return { ...p, buf: null }; 
-        }
+        try { const buf = await cloudinary.fetchPad(engine.ctx, p.cloudUrl); return { ...p, buf }; } catch { return { ...p, buf: null }; }
       }));
       return { ...d, pads: newPads };
     }));
     
     setDevices(hydratedDevices);
-    setSeq(s.seq);
+    setSeq(loadedSeq);
   };
 
   const saveSong = async () => {
     if (!token || !songName.trim()) return; 
     setSongLoading(true); setSongMsg('');
     try {
-      // Upload pads for all samplers
       const safeDevices = await Promise.all(devices.map(async (d) => {
         if (d.type !== 'samp') return d;
         const newPads = await Promise.all(d.pads.map(async (p, i) => {
@@ -548,27 +579,26 @@ export default function App() {
         ? await songsAPI.update(token, activeSong.id, songName, state) 
         : await songsAPI.save(token, songName, state);
         
-      setActiveSong(result.song); 
+      const finalSong = { ...result.song, state: result.song.state || state };
+      setActiveSong(finalSong); 
       setSongs(prev => { 
-        const idx = prev.findIndex(s => s.id === result.song.id); 
-        return idx >= 0 ? prev.map((s,i) => i===idx ? result.song : s) : [...prev, result.song]; 
+        const idx = prev.findIndex(s => s.id === finalSong.id); 
+        return idx >= 0 ? prev.map((s,i) => i===idx ? finalSong : s) : [...prev, finalSong]; 
       }); 
       setSongMsg('✓ Saved');
     } catch(e) { 
       setSongMsg('Error: ' + e.message); 
     } finally { 
-      setSongLoading(false); 
-      setTimeout(() => setSongMsg(''), 3000); 
+      setSongLoading(false); setTimeout(() => setSongMsg(''), 3000); 
     }
   };
 
   const loadSong = async (song) => { 
     setSongLoading(true); 
     try { 
-      await applyState(song.state); 
-      setActiveSong(song); 
-      setSongName(song.name); 
-      setShowSongs(false); 
+      const stateToLoad = song.state || song.song_state || song.data;
+      await applyState(stateToLoad); 
+      setActiveSong(song); setSongName(song.name); setShowSongs(false); 
     } catch(e) { 
       setSongMsg('Load error: ' + e.message); 
     } finally { 
@@ -581,9 +611,7 @@ export default function App() {
       await songsAPI.delete(token, id); 
       setSongs(prev => prev.filter(s => s.id !== id)); 
       if (activeSong?.id === id) setActiveSong(null); 
-    } catch(e) { 
-      setSongMsg('Delete error: ' + e.message); 
-    } 
+    } catch(e) { setSongMsg('Delete error: ' + e.message); } 
   };
 
   if (!authed) return (
@@ -596,13 +624,7 @@ export default function App() {
           <div style={{ fontSize:24, fontWeight:700, letterSpacing:1, color:L.text, marginBottom:6 }}>{loginMode === 'login' ? 'Sign In' : 'Create Account'}</div>
           
           {['Username','Password'].map((ph,i) => (
-            <input 
-              key={ph} type={i===1?'password':'text'} placeholder={ph} 
-              value={i===0?loginU:loginP} 
-              onChange={e => i===0?setLoginU(e.target.value):setLoginP(e.target.value)} 
-              onKeyDown={e => e.key==='Enter' && doAuth()} 
-              style={{ display:'block', width:'100%', padding:'11px 14px', marginBottom:12, border:`1.5px solid ${L.border}`, borderRadius:8, fontSize:13, color:L.text, background:L.panelB }} 
-            />
+            <input key={ph} type={i===1?'password':'text'} placeholder={ph} value={i===0?loginU:loginP} onChange={e => i===0?setLoginU(e.target.value):setLoginP(e.target.value)} onKeyDown={e => e.key==='Enter' && doAuth()} style={{ display:'block', width:'100%', padding:'11px 14px', marginBottom:12, border:`1.5px solid ${L.border}`, borderRadius:8, fontSize:13, color:L.text, background:L.panelB }} />
           ))}
           
           {loginErr && <div style={{ fontSize:11, color:'#c4400f', marginBottom:12, padding:'8px 12px', background:'#fef2ee', borderRadius:6 }}>{loginErr}</div>}
@@ -638,24 +660,17 @@ export default function App() {
 
       {/* ── TRANSPORT ── */}
       <div style={{ height:52, flexShrink:0, background:L.panel, borderBottom:`1.5px solid ${L.border}`, display:'flex', alignItems:'center', gap:14, padding:'0 16px', boxShadow:'0 1px 0 rgba(0,0,0,0.04)' }}>
-        <div style={{ fontSize:11, fontWeight:700, letterSpacing:3, color:L.text, paddingRight:14, borderRight:`1.5px solid ${L.border}`, flexShrink:0 }}>
-          ◆ LIVE RIG
-        </div>
+        <div style={{ fontSize:11, fontWeight:700, letterSpacing:3, color:L.text, paddingRight:14, borderRight:`1.5px solid ${L.border}`, flexShrink:0 }}>◆ LIVE RIG</div>
         
         <button onClick={() => { ea(); setPlaying(p => !p); }} style={{ fontFamily:mono, fontSize:11, letterSpacing:2, padding:'7px 18px', border:'none', borderRadius:6, cursor:'pointer', fontWeight:700, flexShrink:0, background: playing ? '#c4400f' : '#1a7a3a', color:'#fff' }}>
           {playing ? '■ STOP' : '▶ PLAY'}
         </button>
         
         <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
-          <div>
-            <div style={{ fontSize:7, color:L.muted, letterSpacing:1.5 }}>BPM</div>
-            <div style={{ fontSize:22, fontWeight:700, color:L.accent, letterSpacing:1, lineHeight:1 }}>{bpm}</div>
-          </div>
+          <div><div style={{ fontSize:7, color:L.muted, letterSpacing:1.5 }}>BPM</div><div style={{ fontSize:22, fontWeight:700, color:L.accent, letterSpacing:1, lineHeight:1 }}>{bpm}</div></div>
           <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
             {[[1,'▲'],[-1,'▼']].map(([d,l]) => (
-              <button key={l} onClick={() => setBpmS(b => Math.max(60,Math.min(200,b+d)))} style={{ width:15, height:13, background:L.panelB, border:`1px solid ${L.border}`, fontSize:8, cursor:'pointer', borderRadius:2, fontFamily:mono, color:L.muted, padding:0, lineHeight:1 }}>
-                {l}
-              </button>
+              <button key={l} onClick={() => setBpmS(b => Math.max(60,Math.min(200,b+d)))} style={{ width:15, height:13, background:L.panelB, border:`1px solid ${L.border}`, fontSize:8, cursor:'pointer', borderRadius:2, fontFamily:mono, color:L.muted, padding:0, lineHeight:1 }}>{l}</button>
             ))}
           </div>
           <input type="range" min={60} max={200} value={bpm} onChange={e=>setBpmS(+e.target.value)} style={{ width:90 }} />
@@ -678,25 +693,14 @@ export default function App() {
         </button>
       </div>
 
-      {/* ── SONGS PANEL ── */}
       {showSongs && (
         <div style={{ background:L.panel, borderBottom:`1.5px solid ${L.border}`, padding:'14px 16px', boxShadow:'0 4px 16px rgba(0,0,0,0.06)', zIndex:100, flexShrink:0, maxHeight:220, overflowY:'auto' }}>
-          {songs.length === 0 ? (
-            <div style={{ fontSize:12, color:L.muted, textAlign:'center', padding:'16px 0' }}>No saved songs yet. Name your song above and hit SAVE.</div> 
-          ) : (
-            songs.map(s => (
-              <div key={s.id} style={{ display:'flex', alignItems:'center', padding:'8px 12px', borderRadius:6, marginBottom:4, border:`1px solid ${activeSong?.id===s.id?'#1566a8':L.border}`, background:activeSong?.id===s.id?'#edf4ff':L.panelB }}>
-                <div>
-                  <div style={{ fontSize:12, fontWeight:700, color:L.text }}>{s.name}</div>
-                  <div style={{ fontSize:10, color:L.muted }}>{new Date(s.updated_at||s.created_at).toLocaleDateString()}</div>
-                </div>
-                <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
-                  <button onClick={() => loadSong(s)} style={{ fontFamily:mono, fontSize:10, padding:'5px 12px', background:'#1566a8', color:'#fff', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700 }}>LOAD</button>
-                  <button onClick={() => deleteSong(s.id)} style={{ fontFamily:mono, fontSize:10, padding:'5px 10px', background:'transparent', color:'#c4400f', border:`1px solid #c4400f`, borderRadius:5, cursor:'pointer' }}>✕</button>
-                </div>
-              </div>
-            ))
-          )}
+          {songs.length === 0 ? <div style={{ fontSize:12, color:L.muted, textAlign:'center', padding:'16px 0' }}>No saved songs yet. Name your song above and hit SAVE.</div> : songs.map(s => (
+            <div key={s.id} style={{ display:'flex', alignItems:'center', padding:'8px 12px', borderRadius:6, marginBottom:4, border:`1px solid ${activeSong?.id===s.id?'#1566a8':L.border}`, background:activeSong?.id===s.id?'#edf4ff':L.panelB }}>
+              <div><div style={{ fontSize:12, fontWeight:700, color:L.text }}>{s.name}</div><div style={{ fontSize:10, color:L.muted }}>{new Date(s.updated_at||s.created_at).toLocaleDateString()}</div></div>
+              <div style={{ marginLeft:'auto', display:'flex', gap:6 }}><button onClick={() => loadSong(s)} style={{ fontFamily:mono, fontSize:10, padding:'5px 12px', background:'#1566a8', color:'#fff', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700 }}>LOAD</button><button onClick={() => deleteSong(s.id)} style={{ fontFamily:mono, fontSize:10, padding:'5px 10px', background:'transparent', color:'#c4400f', border:`1px solid #c4400f`, borderRadius:5, cursor:'pointer' }}>✕</button></div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -722,17 +726,8 @@ export default function App() {
                 return (
                   <div key={key} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:5, padding:'6px 14px', borderRight:`1px solid ${L.border}`, minWidth:82, ...(key==='master'?{borderLeft:`2px solid ${L.borderHi}`,marginLeft:6}:{}) }}>
                     <div style={{ fontSize:9, fontWeight:700, color:col, letterSpacing:1, whiteSpace:'nowrap' }}>{name}</div>
-                    
-                    {key!=='master' && (
-                      <div style={{ display:'flex', gap:4 }}>
-                        <Pill label="S" active={m.solo} col={col} onClick={() => setMx(prev=>({...prev,[key]:{...prev[key],solo:!m.solo}}))} />
-                        <Pill label="M" active={m.mute} col="#c4400f" onClick={() => setMx(prev=>({...prev,[key]:{...prev[key],mute:!m.mute}}))} />
-                      </div>
-                    )}
-                    
-                    <div style={{ height:90, width:30, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden' }}>
-                      <input type="range" min={0} max={100} value={m.vol} onChange={e=>setMx(prev=>({...prev,[key]:{...prev[key],vol:+e.target.value}}))} style={{ width:90, transform:'rotate(-90deg)', transformOrigin:'center', cursor:'pointer', margin:0 }} />
-                    </div>
+                    {key!=='master' && <div style={{ display:'flex', gap:4 }}><Pill label="S" active={m.solo} col={col} onClick={() => setMx(prev=>({...prev,[key]:{...prev[key],solo:!m.solo}}))} /><Pill label="M" active={m.mute} col="#c4400f" onClick={() => setMx(prev=>({...prev,[key]:{...prev[key],mute:!m.mute}}))} /></div>}
+                    <div style={{ height:90, width:30, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden' }}><input type="range" min={0} max={100} value={m.vol} onChange={e=>setMx(prev=>({...prev,[key]:{...prev[key],vol:+e.target.value}}))} style={{ width:90, transform:'rotate(-90deg)', transformOrigin:'center', cursor:'pointer', margin:0 }} /></div>
                     <div style={{ fontSize:10, fontWeight:700, color:col, fontFamily:mono }}>{m.vol}%</div>
                     <div style={{ fontSize:8, color:L.muted }}>PAN</div>
                     <input type="range" min={-100} max={100} value={m.pan} onChange={e=>setMx(prev=>({...prev,[key]:{...prev[key],pan:+e.target.value}}))} style={{ width:64 }} />
@@ -773,13 +768,7 @@ export default function App() {
           const T = DEVICE_TYPES[d.type];
           return (
             <RackUnit key={d.id} col={T.col}>
-              <DevHeader 
-                label={T.name} subtitle={`ID: ${d.id}`} col={T.col} 
-                open={open[d.id] ?? true} 
-                onToggle={() => setOpen(o=>({...o,[d.id]:!(o[d.id] ?? true)}))} 
-                onRemove={() => removeDevice(d.id)} 
-              />
-              
+              <DevHeader label={T.name} subtitle={`ID: ${d.id}`} col={T.col} open={open[d.id] ?? true} onToggle={() => setOpen(o=>({...o,[d.id]:!(o[d.id] ?? true)}))} onRemove={() => removeDevice(d.id)} />
               {(open[d.id] ?? true) && (
                 <div style={{ display:'flex', alignItems:'center', padding:'10px 14px', gap:14, borderLeft:`4px solid ${T.col}`, background:L.panelB, flexWrap:'wrap' }}>
                   
@@ -787,26 +776,18 @@ export default function App() {
                     <>
                       <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                         <div style={{ fontSize:8, color:L.muted, letterSpacing:1.5 }}>WAVEFORM</div>
-                        <div style={{ display:'flex', gap:4 }}>
-                          {['sawtooth','square','sine','triangle'].map(w => <Pill key={w} label={w.slice(0,3).toUpperCase()} active={d.wave===w} col={T.col} onClick={()=>updDev(d.id,'wave',w)} />)}
-                        </div>
+                        <div style={{ display:'flex', gap:4 }}>{['sawtooth','square','sine','triangle'].map(w => <Pill key={w} label={w.slice(0,3).toUpperCase()} active={d.wave===w} col={T.col} onClick={()=>updDev(d.id,'wave',w)} />)}</div>
                         <div style={{ fontSize:8, color:L.muted, letterSpacing:1.5, marginTop:4 }}>OCTAVE</div>
-                        <div style={{ display:'flex', gap:4 }}>
-                          {[2,3,4,5,6].map(o => <Pill key={o} label={String(o)} active={d.oct===o} col={T.col} onClick={()=>updDev(d.id,'oct',o)} />)}
-                        </div>
+                        <div style={{ display:'flex', gap:4 }}>{[2,3,4,5,6].map(o => <Pill key={o} label={String(o)} active={d.oct===o} col={T.col} onClick={()=>updDev(d.id,'oct',o)} />)}</div>
                       </div>
                       <Knob val={d.atk} min={1} max={2000} col={T.col} label="ATTACK"  fmt={v=>v+'ms'} onVal={v=>updDev(d.id,'atk',v)} />
                       <Knob val={d.rel} min={50} max={4000} col={T.col} label="RELEASE" fmt={v=>v+'ms'} onVal={v=>updDev(d.id,'rel',v)} size={30} />
                       <Knob val={d.flt} min={100} max={8000} col={T.col} label="FILTER" fmt={v=>v>999?Math.round(v/100)/10+'k':v+'Hz'} onVal={v=>updDev(d.id,'flt',v)} size={30} />
                       <div>
                         <div style={{ fontSize:8, color:L.muted, letterSpacing:1.5, marginBottom:6 }}>NOTE — click to play</div>
-                        <div style={{ display:'flex', gap:3, flexWrap:'wrap', maxWidth:200 }}>
-                          {NOTES.map(n => (<Pill key={n} label={n} active={d.note===n} col={T.col} onClick={() => { updDev(d.id,'note',n); ea(); engine.playSynth({ freq:noteFreq(n,d.oct), wave:d.wave, atk:d.atk/1000, rel:d.rel/1000, filter:d.flt }); }} />))}
-                        </div>
+                        <div style={{ display:'flex', gap:3, flexWrap:'wrap', maxWidth:200 }}>{NOTES.map(n => (<Pill key={n} label={n} active={d.note===n} col={T.col} onClick={() => { updDev(d.id,'note',n); ea(); playPoly(engine.ctx.currentTime, noteFreq(n,d.oct), d, 0.2); }} />))}</div>
                       </div>
-                      <div style={{ fontFamily:mono, fontSize:14, fontWeight:700, color:T.col, background:'#edf4ff', border:`1px solid #b0cce8`, padding:'6px 14px', borderRadius:8 }}>
-                        {d.note}{d.oct}
-                      </div>
+                      <div style={{ fontFamily:mono, fontSize:14, fontWeight:700, color:T.col, background:'#edf4ff', border:`1px solid #b0cce8`, padding:'6px 14px', borderRadius:8 }}>{d.note}{d.oct}</div>
                     </>
                   )}
 
@@ -819,10 +800,7 @@ export default function App() {
                       <Knob val={d.atk} min={1} max={200} col="#c08020" label="ATTACK" fmt={v=>v+'ms'} onVal={v=>updDev(d.id,'atk',v)} />
                       <Knob val={d.rel} min={20} max={800} col="#c08020" label="RELEASE" fmt={v=>v+'ms'} onVal={v=>updDev(d.id,'rel',v)} />
                       <Knob val={d.drv} min={0} max={100} col="#c06010" label="DRIVE" fmt={v=>v+'%'} onVal={v=>updDev(d.id,'drv',v)} size={30} />
-                      <div style={{ display:'flex', flexDirection:'column', gap:6, paddingLeft:12, borderLeft:`1px solid ${L.border}` }}>
-                        <Pill label={d.arp?'ARP ON':'ARP OFF'} active={d.arp} col={T.col} onClick={()=>updDev(d.id,'arp',!d.arp)} />
-                        <Pill label="▶ TEST" active={false} col={T.col} onClick={() => { ea(); engine.playRR(noteFreq('E',2), engine.ctx.currentTime, 0.5, d); }} />
-                      </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap:6, paddingLeft:12, borderLeft:`1px solid ${L.border}` }}><Pill label={d.arp?'ARP ON':'ARP OFF'} active={d.arp} col={T.col} onClick={()=>updDev(d.id,'arp',!d.arp)} /><Pill label="▶ TEST" active={false} col={T.col} onClick={() => { ea(); engine.playRR(noteFreq('E',2), engine.ctx.currentTime, 0.5, d); }} /></div>
                     </>
                   )}
 
@@ -830,18 +808,14 @@ export default function App() {
                     <>
                       <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                         <div style={{ fontSize:8, color:L.muted, letterSpacing:1.5 }}>WAVE</div>
-                        <div style={{ display:'flex', gap:4 }}>
-                          {['sawtooth','square'].map(w => <Pill key={w} label={w.slice(0,3).toUpperCase()} active={d.wave===w} col={T.col} onClick={()=>updDev(d.id,'wave',w)} />)}
-                        </div>
+                        <div style={{ display:'flex', gap:4 }}>{['sawtooth','square'].map(w => <Pill key={w} label={w.slice(0,3).toUpperCase()} active={d.wave===w} col={T.col} onClick={()=>updDev(d.id,'wave',w)} />)}</div>
                       </div>
                       <Knob val={d.cut} min={50} max={2000} col={T.col} label="CUTOFF" fmt={v=>v+'Hz'} onVal={v=>updDev(d.id,'cut',v)} size={30} />
                       <Knob val={d.res} min={0} max={100} col={T.col} label="RESONANCE" fmt={v=>v+'%'} onVal={v=>updDev(d.id,'res',v)} size={30} />
                       <Knob val={d.env} min={0} max={5000} col={T.col} label="ENV MOD" fmt={v=>v+'Hz'} onVal={v=>updDev(d.id,'env',v)} />
                       <Knob val={d.dec} min={50} max={1000} col={T.col} label="DECAY" fmt={v=>v+'ms'} onVal={v=>updDev(d.id,'dec',v)} />
                       <Knob val={d.dist} min={0} max={100} col="#c4400f" label="DISTORT" fmt={v=>v+'%'} onVal={v=>updDev(d.id,'dist',v)} />
-                      <div style={{ display:'flex', flexDirection:'column', gap:6, paddingLeft:12, borderLeft:`1px solid ${L.border}` }}>
-                        <Pill label="▶ TEST" active={false} col={T.col} onClick={() => { ea(); playAcid(engine.ctx.currentTime, noteFreq('A',1), d); }} />
-                      </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap:6, paddingLeft:12, borderLeft:`1px solid ${L.border}` }}><Pill label="▶ TEST" active={false} col={T.col} onClick={() => { ea(); playAcid(engine.ctx.currentTime, noteFreq('A',1), d, 0.2); }} /></div>
                     </>
                   )}
 
@@ -857,21 +831,9 @@ export default function App() {
                               gap:3, boxShadow:pad.buf?`0 1px 6px ${T.col}30`:L.shadow 
                             }}>
                             <div style={{ fontSize:9, color:pad.buf?T.col:L.dim, letterSpacing:1, fontWeight:700 }}>{PAD_KEYS[i]}</div>
-                            {pad.buf ? (
-                              <div style={{ fontSize:9, color:T.col, fontWeight:700, textAlign:'center', padding:'0 4px', overflow:'hidden', textOverflow:'ellipsis', maxWidth:80, whiteSpace:'nowrap' }}>
-                                {pad.name}
-                              </div>
-                            ) : (
-                              <div style={{ fontSize:9, color:L.dim }}>EMPTY</div>
-                            )}
+                            {pad.buf ? <div style={{ fontSize:9, color:T.col, fontWeight:700, textAlign:'center', padding:'0 4px', overflow:'hidden', textOverflow:'ellipsis', maxWidth:80, whiteSpace:'nowrap' }}>{pad.name}</div> : <div style={{ fontSize:9, color:L.dim }}>EMPTY</div>}
                           </div>
-                          
-                          {pad.buf && (
-                            <div style={{ display:'flex', gap:3 }}>
-                              <button onClick={()=>document.getElementById(`pi-${d.id}-${i}`).click()} style={{ flex:1, fontSize:8, padding:'3px 0', background:'transparent', border:`1px solid ${L.border}`, borderRadius:4, cursor:'pointer', color:L.muted }}>LOAD</button>
-                              <button onClick={()=>{ const np=[...d.pads]; np[i]={name:`PAD ${i+1}`,buf:null,vol:100,pitch:0,cloudUrl:null}; updDev(d.id,'pads',np); }} style={{ fontSize:8, padding:'3px 7px', background:'transparent', border:`1px solid #c4400f`, borderRadius:4, cursor:'pointer', color:'#c4400f' }}>✕</button>
-                            </div>
-                          )}
+                          {pad.buf && <div style={{ display:'flex', gap:3 }}><button onClick={()=>document.getElementById(`pi-${d.id}-${i}`).click()} style={{ flex:1, fontSize:8, padding:'3px 0', background:'transparent', border:`1px solid ${L.border}`, borderRadius:4, cursor:'pointer', color:L.muted }}>LOAD</button><button onClick={()=>{ const np=[...d.pads]; np[i]={name:`PAD ${i+1}`,buf:null,vol:100,pitch:0,cloudUrl:null}; updDev(d.id,'pads',np); }} style={{ fontSize:8, padding:'3px 7px', background:'transparent', border:`1px solid #c4400f`, borderRadius:4, cursor:'pointer', color:'#c4400f' }}>✕</button></div>}
                           <input id={`pi-${d.id}-${i}`} type="file" accept="audio/*" style={{ display:'none' }} onChange={e=>e.target.files[0]&&loadPad(d.id,i,e.target.files[0])} />
                         </div>
                       ))}
@@ -904,20 +866,17 @@ export default function App() {
       <div style={{ height:215, flexShrink:0, background:L.panel, borderTop:`2px solid ${L.border}`, display:'flex', flexDirection:'column' }}>
         <div style={{ height:32, background:L.panelB, borderBottom:`1px solid ${L.border}`, display:'flex', alignItems:'center', padding:'0 12px', gap:10, flexShrink:0 }}>
           <span style={{ fontSize:9, letterSpacing:2.5, color:L.muted, fontWeight:700 }}>◈ MIDI SEQUENCER</span>
+          <span style={{ fontSize:9, color:L.dim, marginLeft: 10, letterSpacing:0.5 }}>Left-click cell to edit · Right-click notes to extend duration</span>
           
           <div style={{ marginLeft:'auto', display:'flex', gap:10, alignItems:'center' }}>
             <div style={{fontSize:8, color:L.dim, letterSpacing:1}}>LENGTH:</div>
-            <input type="number" min={1} max={128} value={seqLen} onChange={e=>handleUpdateSeqLen(+e.target.value)} 
-              style={{width:40, height:20, fontSize:10, background:L.panel, border:`1px solid ${L.border}`, borderRadius:3, textAlign:'center', color:L.text, fontFamily:mono}} 
-            />
+            <input type="number" min={1} max={128} value={seqLen} onChange={e=>handleUpdateSeqLen(+e.target.value)} style={{width:40, height:20, fontSize:10, background:L.panel, border:`1px solid ${L.border}`, borderRadius:3, textAlign:'center', color:L.text, fontFamily:mono}} />
             <div style={{fontSize:8, color:L.dim, letterSpacing:1, marginLeft:6}}>STEPS/BEAT:</div>
-            <input type="number" min={1} max={16} value={stepsPerBeat} onChange={e=>setStepsPerBeat(+e.target.value)} 
-              style={{width:32, height:20, fontSize:10, background:L.panel, border:`1px solid ${L.border}`, borderRadius:3, textAlign:'center', color:L.text, fontFamily:mono}} 
-            />
+            <input type="number" min={1} max={16} value={stepsPerBeat} onChange={e=>setStepsPerBeat(+e.target.value)} style={{width:32, height:20, fontSize:10, background:L.panel, border:`1px solid ${L.border}`, borderRadius:3, textAlign:'center', color:L.text, fontFamily:mono}} />
           </div>
         </div>
 
-        {/* Ruler - Fixed width cells wrapped in overflow-x */}
+        {/* Ruler */}
         <div style={{ height:16, background:'#f8f7f4', borderBottom:`1px solid ${L.border}`, display:'flex', flexShrink:0 }}>
           <div style={{ width:126, flexShrink:0, borderRight:`1px solid ${L.border}` }} />
           <div style={{ flex:1, display:'flex', alignItems:'center', padding:'0 4px', gap:2, overflowX:'auto' }} className="seq-scroll">
@@ -933,50 +892,107 @@ export default function App() {
           </div>
         </div>
 
-        {/* Tracks - Uses dynamic devices array */}
+        {/* Tracks with Dynamic Stretching Logic */}
         <div style={{ flex:1, overflowY:'auto' }}>
           {[
             ...DRUM_IDS.map(id => ({ id, isDrum: true, col: DRUM_COLS[DRUM_IDS.indexOf(id)], name: DRUM_NAMES[DRUM_IDS.indexOf(id)] })), 
             ...devices.map(d => ({ id: d.id, isDrum: false, col: DEVICE_TYPES[d.type].col, name: DEVICE_TYPES[d.type].name, pitched: DEVICE_TYPES[d.type].pitched }))
-          ].map((track) => (
-            <div key={track.id} style={{ height:26, display:'flex', borderBottom:`1px solid #f0ede8` }}>
-              <div onClick={() => track.pitched && setPianoRoll({ trackId:track.id, highlightStep:null })} 
-                style={{ width:126, flexShrink:0, display:'flex', alignItems:'center', gap:6, padding:'0 8px', borderRight:`1px solid ${L.border}`, cursor: track.pitched ? 'pointer' : 'default' }}>
-                <div style={{ width:3, height:14, borderRadius:2, background:track.col, flexShrink:0 }} />
-                <div style={{ fontSize:8, letterSpacing:1, color:L.muted, textTransform:'uppercase', flex:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                  {track.name}
+          ].map((track) => {
+            let coveredUntil = -1; // Tracks note overlaps for stretched notes
+            return (
+              <div key={track.id} style={{ height:26, display:'flex', borderBottom:`1px solid #f0ede8` }}>
+                <div onClick={() => track.pitched && setPianoRoll({ trackId:track.id, highlightStep:null })} 
+                  style={{ width:126, flexShrink:0, display:'flex', alignItems:'center', gap:6, padding:'0 8px', borderRight:`1px solid ${L.border}`, cursor: track.pitched ? 'pointer' : 'default' }}>
+                  <div style={{ width:3, height:14, borderRadius:2, background:track.col, flexShrink:0 }} />
+                  <div style={{ fontSize:8, letterSpacing:1, color:L.muted, textTransform:'uppercase', flex:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                    {track.name}
+                  </div>
+                  {track.pitched && <span style={{ fontSize:8, color:track.col, opacity:0.6 }}>𝄞</span>}
                 </div>
-                {track.pitched && <span style={{ fontSize:8, color:track.col, opacity:0.6 }}>𝄞</span>}
-              </div>
-              <div style={{ flex:1, display:'flex', alignItems:'center', padding:'0 4px', gap:2, overflowX:'auto' }} className="seq-scroll" onScroll={e => { const scrolls = document.querySelectorAll('.seq-scroll'); scrolls.forEach(s => { if(s!==e.target) s.scrollLeft = e.target.scrollLeft; }) }}>
-                {Array(seqLen).fill(0).map((_,si) => {
-                  const val = seq[track.id]?.[si];
-                  const on = val != null && val !== false;
-                  let label = '';
-                  if (on) {
-                    if (track.pitched === 'pad') label = `P${(val||0)+1}`;
-                    else if (track.pitched && val?.note) label = val.note+val.oct;
-                  }
-                  return (
-                    <div key={si} style={{ flex: '0 0 28px', display:'flex', alignItems:'center', gap:2 }}>
-                      {si>0&&si%stepsPerBeat===0 && <div style={{ width:1, height:14, background:L.borderHi, flexShrink:0 }} />}
-                      <div onClick={() => toggleStep(track.id,si)} 
-                        style={{ 
-                          flex:1, height:20, borderRadius:3, cursor:'pointer', 
-                          border:`1px solid ${on ? track.col+'55' : L.border}`, 
-                          background: on ? track.col+'22' : si===step ? '#fffbe6' : 'transparent', 
-                          outline: si===step ? `2px solid ${track.col}80` : 'none', outlineOffset:-2, 
-                          display:'flex', alignItems:'center', justifyContent:'center', 
-                          fontSize:7, color:track.col, fontWeight:700, letterSpacing:0.5 
-                        }}>
-                        {on ? label : ''}
+                
+                <div style={{ flex:1, display:'flex', alignItems:'center', padding:'0 4px', gap:2, overflowX:'auto' }} className="seq-scroll" onScroll={e => { const scrolls = document.querySelectorAll('.seq-scroll'); scrolls.forEach(s => { if(s!==e.target) s.scrollLeft = e.target.scrollLeft; }) }}>
+                  {Array(seqLen).fill(0).map((_,si) => {
+                    const val = seq[track.id]?.[si];
+                    const on = val != null && val !== false;
+                    const isCovered = si < coveredUntil;
+                    
+                    let label = '';
+                    let len = 1;
+                    
+                    if (on && !isCovered) {
+                      if (track.pitched === 'pad') {
+                        label = `P${(val||0)+1}`;
+                      } else if (track.pitched && val?.note) { 
+                        label = val.note+val.oct; 
+                        len = val.len || 1; 
+                      }
+                      
+                      len = Math.min(len, seqLen - si); // Prevent stretching past grid
+                      if (len > 1) coveredUntil = si + len;
+                    }
+
+                    const isPlaying = step >= si && step < si + len;
+
+                    return (
+                      <div key={si} style={{ flex: '0 0 28px', display:'flex', alignItems:'center', position:'relative' }}>
+                        
+                        {/* Step Divider */}
+                        {si>0&&si%stepsPerBeat===0 && <div style={{ position:'absolute', left:-2, width:1, height:14, background:L.borderHi, zIndex:1 }} />}
+                        
+                        {/* Base grid cell */}
+                        <div onClick={() => !isCovered && toggleStep(track.id,si)} 
+                          style={{ width:'100%', height:20, borderRadius:3, cursor:'pointer', border:`1px solid ${L.border}`, background: si===step ? '#fffbe6' : 'transparent', outline: si===step ? `2px solid ${track.col}80` : 'none', outlineOffset:-2 }} />
+                        
+                        {/* Stretched Note Overlay */}
+                        {on && !isCovered && (
+                          <div 
+                            onClick={() => toggleStep(track.id,si)}
+                            onContextMenu={(e) => { 
+                              e.preventDefault(); 
+                              if (track.pitched && track.pitched !== 'pad') {
+                                setSeq(prev => {
+                                  const n = {...prev, [track.id]: [...prev[track.id]]};
+                                  const curNote = n[track.id][si];
+                                  let newLen = (curNote.len || 1) + 1;
+                                  
+                                  if (si + newLen > seqLen || newLen > 16) {
+                                     newLen = 1; // Wrap around to standard length
+                                  } else {
+                                     // Clear any notes that might be swallowed by this stretch
+                                     for (let x = si + 1; x < si + newLen; x++) n[track.id][x] = null;
+                                  }
+                                  
+                                  n[track.id][si] = { ...curNote, len: newLen };
+                                  return n;
+                                });
+                              }
+                            }}
+                            title="Left-click: Edit · Right-click: Extend Length"
+                            style={{ 
+                              position:'absolute', left:0, top:'50%', transform:'translateY(-50%)',
+                              height:20, 
+                              width: len * 28 + (len - 1) * 2, // Span exactly 'len' cells including gap!
+                              borderRadius:3, cursor:'pointer', zIndex:2, 
+                              border:`1px solid ${isPlaying ? track.col : track.col+'80'}`, 
+                              background: isPlaying ? track.col+'66' : track.col+'33', 
+                              display:'flex', alignItems:'center', justifyContent:'center', 
+                              fontSize:7, color:track.col, fontWeight:700, letterSpacing:0.5,
+                              boxShadow: `0 2px 8px ${track.col}30`,
+                              backdropFilter: 'blur(3px)'
+                            }}>
+                            {label}
+                            {track.pitched && track.pitched !== 'pad' && (
+                              <div style={{position:'absolute', right:2, top:3, bottom:3, width:3, background:track.col, opacity:0.5, borderRadius:2}} />
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -994,23 +1010,25 @@ export default function App() {
             }
             setSeq(prev => { 
               const next = { ...prev, [pianoRoll.trackId]: [...prev[pianoRoll.trackId]] }; 
+              const existing = next[pianoRoll.trackId][si];
+              if (noteObj && existing && existing.len) { noteObj.len = existing.len; } // Preserve length if repitched
               next[pianoRoll.trackId][si] = noteObj; return next; 
             });
             if (noteObj) {
               ea(); 
               const d = devices.find(x => x.id === pianoRoll.trackId);
-              if (d.type === 'poly') engine.playSynth({ freq: noteFreq(noteObj.note, noteObj.oct), wave: d.wave, atk: d.atk/1000, rel: d.rel/1000, filter: d.flt });
+              if (d.type === 'poly') playPoly(engine.ctx.currentTime, noteFreq(noteObj.note, noteObj.oct), d, 0.2);
               else if (d.type === 'rr') engine.playRR(noteFreq(noteObj.note, noteObj.oct), engine.ctx.currentTime, 0.5, d);
-              else if (d.type === 'acid') playAcid(engine.ctx.currentTime, noteFreq(noteObj.note, noteObj.oct), d);
+              else if (d.type === 'acid') playAcid(engine.ctx.currentTime, noteFreq(noteObj.note, noteObj.oct), d, 0.2);
             }
           }}
           onClose={() => setPianoRoll(null)}
           onPlayNote={(note, oct) => {
             ea(); 
             const d = devices.find(x => x.id === pianoRoll.trackId);
-            if (d.type === 'poly') engine.playSynth({ freq: noteFreq(note, oct), wave: d.wave, atk: d.atk/1000, rel: d.rel/1000, filter: d.flt });
+            if (d.type === 'poly') playPoly(engine.ctx.currentTime, noteFreq(note, oct), d, 0.2);
             else if (d.type === 'rr') engine.playRR(noteFreq(note, oct), engine.ctx.currentTime, 0.5, d);
-            else if (d.type === 'acid') playAcid(engine.ctx.currentTime, noteFreq(note, oct), d);
+            else if (d.type === 'acid') playAcid(engine.ctx.currentTime, noteFreq(note, oct), d, 0.2);
           }}
         />
       )}
